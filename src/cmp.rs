@@ -28,15 +28,13 @@ pub fn compare_file<P: AsRef<path::Path>, Q: AsRef<path::Path>>(a: &P, b: &Q) ->
     let file_a = fs::File::open(a);
     let file_b = fs::File::open(b);
 
-    if file_a.is_err() {
-        let err = file_a.unwrap_err();
-        eprintln!("File {} raised an error", a.as_ref().to_str().unwrap());
+    if let Err(err) = file_a {
+         eprintln!("File {} raised an error", a.as_ref().to_str().unwrap());
         eprintln!("Error: {:?}", &err);
         return Err(err);
     }
 
-    if file_b.is_err() {
-        let err = file_b.unwrap_err();
+    if let Err(err) = file_b {
         eprintln!("File {} raised an error\n", b.as_ref().to_str().unwrap());
         eprintln!("Error: {:?}", &err);
         return Err(err);
@@ -80,12 +78,7 @@ pub struct FileC {
 
 fn hash_file<P : AsRef<path::Path>>(path: &P) -> io::Result<Key> {
 
-    let file = fs::File::open(&path);
-    if file.is_err() {
-        return Err(file.unwrap_err());
-    }
-
-    let mut file = file.unwrap();
+    let mut file = fs::File::open(&path)?;
     let mut buf = [0; 10 * 1024];
     file.read(&mut buf)?;
 
@@ -103,16 +96,22 @@ pub struct FolderC {
     pub map: HashMap<Key, Vec<Vec<FileC>>>
 }
 
+impl Default for FolderC {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FolderC {
 
     pub fn new() -> Self {
-        return FolderC{map: HashMap::new()};
+        FolderC{map: HashMap::new()}
     }
 
     fn add_to_map<P>(&mut self, hash: Key, path: &P, side: Side) where P: AsRef<path::Path> {
 
         let name = path.as_ref().to_string_lossy().into_owned();
-        let new = FileC{name: name.clone(), side: side};
+        let new = FileC{name: name.clone(), side};
         if self.map.contains_key(&hash) {
 
             // ------------------------------------------------------------
@@ -175,7 +174,7 @@ impl FolderC {
 
 }
 
-fn print_files(header: &str, files: &Vec<String>) -> String {
+fn print_files(header: &str, files: &[String]) -> String {
         
     let mut msg = String::new();
     msg.push_str(header);
@@ -189,7 +188,7 @@ fn print_files(header: &str, files: &Vec<String>) -> String {
         msg.push('\n');
         for s in files {
             msg.push_str("  ");
-            msg.push_str(&s);
+            msg.push_str(s);
             msg.push(';');
             msg.push('\n');
         }
@@ -227,7 +226,7 @@ pub fn print_report<K> (mut map: HashMap<K, Vec<Vec<FileC>>>, left: &str, right:
     missing_left.sort();
     missing_right.sort();
 
-    let mut msg = format!("Comparison report\n");
+    let mut msg = "Comparison report\n".to_string();
     for _ in 0..msg.len() {
         msg.push('-');
     }
