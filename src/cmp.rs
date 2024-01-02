@@ -1,35 +1,43 @@
-use std::collections::{HashMap, HashSet};
+use crate::common::{FileSeparation, Preprocessed, Processed};
+use crate::config::{Key, HASH_BUF_SIZE, READ_SIZE};
+use crate::file::FileInfo;
+use fasthash::MetroHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::prelude::*;
-use std::os::unix::fs::FileTypeExt;
 use std::path;
-use std::convert::TryInto;
-use md5::{Md5, Digest};
 
-const SIZE: usize = 16;
-type Key = [u8; SIZE];
+fn hash_file<P: AsRef<path::Path>>(path: &P, buf_size: Option<usize>) -> io::Result<Key> {
+    let file = fs::File::open(&path)?;
+    let mut reader = std::io::BufReader::with_capacity(HASH_BUF_SIZE, file);
 
-
-fn check_file<P: AsRef<path::Path>>(file: P) -> io::Result<()> {
-    let meta = fs::metadata(file)?;
-    let tipo = meta.file_type();
-    if tipo.is_block_device() | tipo.is_fifo() | tipo.is_char_device() {
-        return Err(io::Error::new(io::ErrorKind::Other, "incorrect type"));
+    let mut buf = [0; 1024];
+    let size = buf_size.unwrap_or(HASH_BUF_SIZE);
+    let mut count = 0;
+    let mut hasher = MetroHasher::default();
+    while count < size {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        buf[..n].hash(&mut hasher);
+        count += n;
     }
 
-    Ok(())
+    let hash = hasher.finish();
+    Ok(hash)
 }
 
-pub fn compare_file<P: AsRef<path::Path>, Q: AsRef<path::Path>>(a: &P, b: &Q) -> io::Result<bool> {
-    check_file(&a)?;
-    check_file(&b)?;
-
+fn get_readers<P: AsRef<path::Path>, Q: AsRef<path::Path>>(
+    a: &P,
+    b: &Q,
+) -> io::Result<(std::io::BufReader<fs::File>, std::io::BufReader<fs::File>)> {
     let file_a = fs::File::open(a);
     let file_b = fs::File::open(b);
 
     if let Err(err) = file_a {
-         eprintln!("File {} raised an error", a.as_ref().to_str().unwrap());
+        eprintln!("File {} raised an error", a.as_ref().to_str().unwrap());
         eprintln!("Error: {:?}", &err);
         return Err(err);
     }
@@ -40,212 +48,196 @@ pub fn compare_file<P: AsRef<path::Path>, Q: AsRef<path::Path>>(a: &P, b: &Q) ->
         return Err(err);
     }
 
-    const SIZE: usize = 10 * 1024;
-    let mut contents_a: [u8; SIZE] = [0; SIZE];
-    let mut contents_b: [u8; SIZE] = [0; SIZE];
+    let file_a = file_a.unwrap();
+    let file_b = file_b.unwrap();
+    let reader_a = std::io::BufReader::with_capacity(READ_SIZE, file_a);
+    let reader_b = std::io::BufReader::with_capacity(READ_SIZE, file_b);
 
-    let mut file_a = file_a.unwrap();
-    let mut file_b = file_b.unwrap();
-    let mut bta: usize;
-    let mut btb: usize;
+    Ok((reader_a, reader_b))
+}
+
+pub fn compare_file_seq<P, Q>(lhs: &P, rhs: &Q) -> io::Result<bool>
+where
+    P: AsRef<path::Path>,
+    Q: AsRef<path::Path>,
+{
+    let mut buf_lhs: [u8; READ_SIZE] = [0; READ_SIZE];
+    let mut buf_rhs: [u8; READ_SIZE] = [0; READ_SIZE];
+
+    let (mut reader_lhs, mut reader_rhs) = get_readers(lhs, rhs)?;
+    let mut bts_lhs: usize;
+    let mut bts_rhs: usize;
 
     loop {
-        bta = file_a.read(&mut contents_a)?;
-        btb = file_b.read(&mut contents_b)?;
+        bts_lhs = reader_lhs.read(&mut buf_lhs)?;
+        bts_rhs = reader_rhs.read(&mut buf_rhs)?;
 
-        if contents_a != contents_b {
+        if (bts_lhs != bts_rhs) || (buf_lhs[..bts_lhs] != buf_rhs[..bts_rhs]) {
             return Ok(false);
         }
-        if (btb == 0) | (bta == 0) {
+
+        if (bts_rhs == 0) | (bts_lhs == 0) {
             break;
         }
     }
 
-    Ok((btb == 0) & (bta == 0))
+    Ok((bts_rhs == 0) & (bts_lhs == 0))
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum Side {
-    LEFT,
-    RIGHT
-}
+pub fn compare_file_full<P, Q>(lhs: &P, rhs: &Q, buf_lhs: &mut Vec<u8>, buf_rhs: &mut Vec<u8>) -> io::Result<bool>
+where
+    P: AsRef<path::Path>,
+    Q: AsRef<path::Path>,
+{
+    buf_lhs.clear();
+    buf_rhs.clear();
 
-#[derive(Debug)]
-pub struct FileC {
-    pub name: String,
-    pub side: Side
-}
+    let (mut reader_lhs, mut reader_rhs) = get_readers(lhs, rhs)?;
+    let bts_lhs = reader_lhs.read_to_end(buf_lhs)?;
+    let bts_rhs = reader_rhs.read_to_end(buf_rhs)?;
 
-fn hash_file<P : AsRef<path::Path>>(path: &P) -> io::Result<Key> {
-
-    let mut file = fs::File::open(&path)?;
-    let mut buf = [0; 10 * 1024];
-    file.read(&mut buf)?;
-
-
-    let mut hasher = Md5::new();
-    hasher.update(&buf);
-
-    let hash = hasher.finalize();
-    let res: Key = hash.as_slice().try_into().expect("Wrong length");
-    Ok(res)
-}
-
-#[derive(Debug)]
-pub struct FolderC {
-    pub map: HashMap<Key, Vec<Vec<FileC>>>
-}
-
-impl Default for FolderC {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FolderC {
-
-    pub fn new() -> Self {
-        FolderC{map: HashMap::new()}
+    if (bts_lhs != bts_rhs) || (buf_lhs[..bts_lhs] != buf_rhs[..bts_rhs]) {
+        return Ok(false);
     }
 
-    fn add_to_map<P>(&mut self, hash: Key, path: &P, side: Side) where P: AsRef<path::Path> {
+    Ok(true)
+}
 
-        let name = path.as_ref().to_string_lossy().into_owned();
-        let new = FileC{name: name.clone(), side};
-        if self.map.contains_key(&hash) {
+pub fn process_files(mut prep: Preprocessed) -> Processed {
+    let mut bufa = Vec::with_capacity(READ_SIZE);
+    let mut bufb = Vec::with_capacity(READ_SIZE);
 
-            // ------------------------------------------------------------
-            // if the hash is in the map, we need to manage the collisions
-            // ------------------------------------------------------------
-
-            for choices in self.map.get_mut(&hash).unwrap() {
-                let check = compare_file(&choices[0].name, path);
-                if check.is_err() {
-                    eprintln!("Cannot compare files {} and {}", &choices[0].name, &name);
-                    eprintln!("Skipping {}", name);
-                    return
+    for dupes in prep.to_process.drain(..) {
+        let mut sep = separate_files(&dupes, &prep.info, &mut bufa, &mut bufb);
+        prep.same.append(&mut sep.same);
+        prep.unique.append(&mut sep.unique);
+        if !sep.errors.is_empty() {
+            for idx in sep.errors.drain(..) {
+                let fl = prep.info.get(idx);
+                if fl.is_none() {
+                    eprintln!("Unable to get information for index {}", idx);
+                    continue;
                 }
 
-                let check = check.unwrap();
-                if check {
-                    choices.push(new);
-                    return
-                }
+                let fl = fl.unwrap();
+                eprintln!("There was an error when processing file {}", &fl.path.display());
             }
-
-            // ------------------------------------------------------------------------
-            // in this case it means there is a collision but the files are not equal
-            // ------------------------------------------------------------------------
-
-            self.map.get_mut(&hash).unwrap().push(vec![new]);
-            return;
         }
-
-        // ------------------------------------------------------------
-        // if the hash is not in the map, we need to create a new entry
-        // ------------------------------------------------------------
-        
-        self.map.insert(hash, vec![vec![new]]);
-
     }
 
-    pub fn add_file<P>(&mut self, file: &P, side: Side) where P: AsRef<path::Path> {
-        if file.as_ref().is_dir() {
-            for d in fs::read_dir(file).unwrap() {
-                let entry = d.unwrap();
-                let path = entry.path();
-                self.add_file(&path, side);
-            }
-            return;
-        }
+    // just for convenience
+    prep.same.sort();
+    prep.unique.sort();
+    prep.zero.sort();
 
-        let hash = hash_file(file);
-        if let Ok(h) = hash {
-            // let name = file.as_ref().to_string_lossy().into_owned();
-            // println!("Processing {}...", &name);
-            self.add_to_map(h, file, side);
-            return;
-        }
-
-        let path = file.as_ref().to_string_lossy().into_owned();
-        eprintln!("Cannot hash file {}, skipping...", path);
-
-    }
-
+    Processed { info: prep.info, same: prep.same, zero: prep.zero, unique: prep.unique }
 }
 
-fn print_files(header: &str, files: &[String]) -> String {
-        
-    let mut msg = String::new();
-    msg.push_str(header);
-    msg.push('\n');
+pub fn separate_files(dupes: &[usize], list: &[FileInfo], bufa: &mut Vec<u8>, bufb: &mut Vec<u8>) -> FileSeparation {
+    let mut map: Vec<(Key, Vec<Vec<usize>>)> = Vec::with_capacity(dupes.len() / 2 + 1);
+    let mut errors: Vec<usize> = vec![];
 
-    if files.is_empty() {
-        msg.push_str("[]");
-        msg.push('\n');
+    let size: u64;
+    if dupes.is_empty() {
+        size = 0;
     } else {
-        msg.push('[');
-        msg.push('\n');
-        for s in files {
-            msg.push_str("  ");
-            msg.push_str(s);
-            msg.push(';');
-            msg.push('\n');
-        }
-        msg.push(']');
-        msg.push('\n');
+        size = list[dupes[0]].size;
     }
-    
-    msg
-}
 
-pub fn print_report<K> (mut map: HashMap<K, Vec<Vec<FileC>>>, left: &str, right: &str) {
+    let full: bool;
+    const MAX_FILE_SIZE: u64 = 1024u64.pow(3);
+    if size < 2 * READ_SIZE as u64 {
+        full = false;
+    } else if size < MAX_FILE_SIZE {
+        full = true;
+    } else {
+        full = false;
+    }
 
-    let mut same: Vec<String> = Vec::new();
-    let mut missing_left: Vec<String> = Vec::new();
-    let mut missing_right: Vec<String> = Vec::new();
+    for idx in dupes.iter() {
+        let fl = list.get(*idx);
+        if fl.is_none() {
+            eprintln!("Could not find file at position {}", &idx);
+            errors.push(*idx);
+        }
 
-    for (_, mut val) in map.drain() {
-        for mut vec in val.drain(..) {
-            if vec.len() == 1 {
-                let file = vec.pop().unwrap();
-                match file.side {
-                    Side::LEFT => {missing_left.push(file.name)},
-                    Side::RIGHT => {missing_right.push(file.name)},
-                }
+        let fl = fl.unwrap();
+        let hash = hash_file(&fl.path, None);
+        if let Err(err) = hash {
+            eprintln!("Unable to hash file {}", &fl.path.display());
+            eprintln!("Error: {:?}", err);
+            errors.push(*idx);
+            continue;
+        }
+
+        let key = hash.unwrap();
+        let pos = map.iter().position(|(k, _)| k == &key);
+
+        // if there are no groups, we just insert one
+        if pos.is_none() {
+            map.push((key, vec![vec![*idx]]));
+            continue;
+        }
+
+        // if a group exists we check if the file actually belongs to any of them
+        let (_, groups) = map.get_mut(pos.unwrap()).unwrap();
+        let mut matched: bool = false;
+        for group in groups.iter_mut() {
+            // equality is transitive so just needs to check the first entry of the group
+            let found = &list[group[0]];
+
+            // if the inode is the same, the files must be equal
+            if found.inode == fl.inode {
+                group.push(*idx);
+                matched = true;
+                break;
+            }
+
+            // if the inode is not the same we compare the whole file
+            println!("Comparing {} vs {}", &fl.path.display(), &found.path.display());
+            let check = match full {
+                true => compare_file_full(&fl.path, &found.path, bufa, bufb),
+                false => compare_file_seq(&fl.path, &found.path),
+            };
+            if let Err(err) = check {
+                eprintln!(
+                    "There was an error when checking file {} vs {}",
+                    &fl.path.display(),
+                    found.path.display()
+                );
+                eprintln!("Error: {}", err);
+                eprintln!("Skipping file {}", &fl.path.display());
+                errors.push(*idx);
                 continue;
             }
 
-            let mut set = vec.drain(..).map(|f| f.name).collect::<HashSet<String>>().drain().collect::<Vec<String>>();
-            set.sort();
-            same.push(set.join(", "));
+            if let Ok(ck) = check {
+                if ck {
+                    group.push(*idx);
+                    matched = true;
+                    break;
+                }
+            }
+        }
+
+        // at this stage there was a hash collision but it did not match any of the groups
+        // we then create a new group under the same hash
+
+        if !matched {
+            groups.push(vec![*idx]);
         }
     }
 
-    same.sort();
-    missing_left.sort();
-    missing_right.sort();
-
-    let mut msg = "Comparison report\n".to_string();
-    for _ in 0..msg.len() {
-        msg.push('-');
+    let mut same: Vec<Vec<usize>> = vec![];
+    let mut unique: Vec<usize> = vec![];
+    for (_, mut value) in map.drain(..) {
+        for group in value.drain(..) {
+            match group.len() {
+                0 => panic!("Vector cannot be empty here"),
+                1 => unique.push(group[0]),
+                _ => same.push(group),
+            }
+        }
     }
-
-    msg.push('\n');
-    msg.push_str(&print_files("Same contents:", &same));
-    
-    
-    msg.push('\n');
-    msg.push_str(&print_files(
-        &format!("Missing from {}:", left),
-        &missing_right
-    ));
-    
-    msg.push('\n');
-    msg.push_str(&print_files(
-        &format!("Missing from {}:", right),
-        &missing_left
-    ));
-
-    println!("{}", msg);
+    FileSeparation { same, unique, errors }
 }
