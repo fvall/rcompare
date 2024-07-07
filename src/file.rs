@@ -37,27 +37,24 @@ impl PathIter {
     {
         let valid = check_if_file_is_valid(path);
         if !valid {
-            return Self { stack: vec![], current: PathSelection::EMPTY };
+            return Self { stack: vec![], current: PathSelection::Empty };
         }
 
         if path.as_ref().is_file() {
             return Self {
                 stack: vec![],
-                current: PathSelection::FILE(Some(path.as_ref().to_owned())),
+                current: PathSelection::File(Some(path.as_ref().to_owned())),
             };
         }
         let entry = path.as_ref().read_dir();
         if entry.is_err() {
-            eprintln!(
-                "There was an error when reading {}, skipping it",
-                &path.as_ref().display()
-            );
-            return Self { stack: vec![], current: PathSelection::EMPTY };
+            eprintln!("There was an error when reading {}, skipping it", &path.as_ref().display());
+            return Self { stack: vec![], current: PathSelection::Empty };
         }
 
         Self {
             stack: vec![],
-            current: PathSelection::FOLDER(entry.unwrap(), path.as_ref().to_owned()),
+            current: PathSelection::Folder(entry.unwrap(), path.as_ref().to_owned()),
         }
     }
 }
@@ -91,7 +88,7 @@ impl Iterator for PathIter {
                 eprintln!("There was an error when reading {}, skipping it", &path.display());
                 continue;
             }
-            self.stack.push(PathSelection::FOLDER(dir.unwrap(), path));
+            self.stack.push(PathSelection::Folder(dir.unwrap(), path));
         }
         let new = self.stack.pop()?;
         self.current = new;
@@ -105,23 +102,23 @@ impl Iterator for PathIter {
 
 #[derive(Debug)]
 enum PathSelection {
-    FILE(Option<path::PathBuf>),
-    FOLDER(std::fs::ReadDir, path::PathBuf),
-    EMPTY,
+    File(Option<path::PathBuf>),
+    Folder(std::fs::ReadDir, path::PathBuf),
+    Empty,
 }
 
 impl Iterator for PathSelection {
     type Item = path::PathBuf;
     fn next(&mut self) -> Option<Self::Item> {
-        if let Self::EMPTY = self {
+        if let Self::Empty = self {
             return None;
         }
 
-        if let Self::FILE(f) = self {
+        if let Self::File(f) = self {
             return f.take();
         }
 
-        if let Self::FOLDER(f, path) = self {
+        if let Self::Folder(f, path) = self {
             let entry = f.next()?;
             if entry.is_err() {
                 eprintln!("There was an error when reading the folder {}", &path.display());

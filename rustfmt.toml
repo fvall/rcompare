@@ -1,3 +1,4 @@
 max_width = 120
 struct_lit_width = 70
-fn_call_width = 74
+fn_call_width = 85
+attr_fn_like_width = 120

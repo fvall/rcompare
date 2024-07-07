@@ -67,12 +67,18 @@ impl Serialize for Processed {
         let mut state = serializer.serialize_struct("Processed", 3)?;
         let mut same: Vec<Vec<&FileInfo>> = Vec::with_capacity(self.same.len());
         for v in self.same.iter() {
-            let inner = map_to_file_info(&v, &self.info).map_err(serde::ser::Error::custom)?;
+            let mut inner = map_to_file_info(v, &self.info).map_err(serde::ser::Error::custom)?;
+            inner.sort_by(|a, b| a.path.cmp(&b.path));
             same.push(inner);
         }
 
-        let zero = map_to_file_info(&self.zero, &self.info).map_err(serde::ser::Error::custom)?;
-        let unique = map_to_file_info(&self.unique, &self.info).map_err(serde::ser::Error::custom)?;
+        let mut zero = map_to_file_info(&self.zero, &self.info).map_err(serde::ser::Error::custom)?;
+        let mut unique = map_to_file_info(&self.unique, &self.info).map_err(serde::ser::Error::custom)?;
+
+        // just for convenience
+        same.sort_by(|a, b| a[0].path.cmp(&b[0].path));
+        zero.sort_by(|a, b| a.path.cmp(&b.path));
+        unique.sort_by(|a, b| a.path.cmp(&b.path));
 
         state.serialize_field("zero", &zero)?;
         state.serialize_field("unique", &unique)?;
@@ -184,4 +190,20 @@ fn map_to_file_info<'f>(v: &[usize], info: &'f [FileInfo]) -> Result<Vec<&'f Fil
     }
 
     Ok(inner)
+}
+
+pub(crate) fn stringify_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        return format!("{}B", bytes);
+    }
+
+    if bytes < 1024 * 1024 {
+        return format!("{}Kib", bytes / 1024);
+    }
+
+    if bytes < 1024 * 1024 * 1024 {
+        return format!("{}Mib", bytes / (1024 * 1024));
+    }
+
+    format!("{}Gib", bytes / (1024 * 1024 * 1024))
 }
