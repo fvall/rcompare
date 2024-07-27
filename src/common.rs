@@ -26,7 +26,6 @@ pub struct Preprocessed {
 
 #[derive(Debug, Default, Clone)]
 pub struct Processed {
-    // pub info: std::sync::Arc<Vec<FileInfo>>,
     pub info: Vec<FileInfo>,
     pub zero: VecIdx,
     pub unique: VecIdx,

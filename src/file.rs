@@ -63,7 +63,7 @@ impl Iterator for PathIter {
     type Item = FileInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(path) = self.current.next() {
+        for path in self.current.by_ref() {
             let valid = check_if_file_is_valid(&path);
             if !valid {
                 continue;
